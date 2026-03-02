@@ -223,7 +223,7 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 			}
 
 			// --- max-tokens enforcement ---
-			if e.MaxTokens > 0 && !hitLines {
+			if e.MaxTokens > 0 {
 				writeSlice, hitTokens = e.applyTokenLimit(writeSlice)
 			} else if e.MaxTokens == 0 {
 				// No token limit: still count for reporting.
@@ -239,14 +239,14 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 				return wErr
 			}
 
-			if hitLines {
-				e.StoppedBy = "max_lines"
-				return nil
-			}
 			if hitTokens {
 				if e.StoppedBy == "" {
 					e.StoppedBy = "max_tokens"
 				}
+				return nil
+			}
+			if hitLines {
+				e.StoppedBy = "max_lines"
 				return nil
 			}
 
@@ -271,11 +271,11 @@ func (e *Engine) Report(w io.Writer) {
 		return
 	}
 	if e.SummaryMode == "json" {
-		fmt.Fprintf(w, `{"lines": %d, "tokens": %d, "bytes": %d, "stopped": "%s"}`+"\n",
+		fmt.Fprintf(w, "\n"+`{"lines": %d, "tokens": %d, "bytes": %d, "stopped": "%s"}`+"\n",
 			e.LinesCount, e.TokensCount, e.BytesEmitted, e.StoppedBy)
 	} else {
 		// Default to kv
-		fmt.Fprintf(w, "lines: %d, tokens: %d, bytes: %d, stopped: %s\n",
+		fmt.Fprintf(w, "\nlines: %d, tokens: %d, bytes: %d, stopped: %s\n",
 			e.LinesCount, e.TokensCount, e.BytesEmitted, e.StoppedBy)
 	}
 }

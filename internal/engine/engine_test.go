@@ -19,7 +19,7 @@ func TestEngineReport(t *testing.T) {
 		e.SummaryMode = "kv"
 		var buf bytes.Buffer
 		e.Report(&buf)
-		expected := "lines: 10, tokens: 25, bytes: 1024, stopped: eof\n"
+		expected := "\nlines: 10, tokens: 25, bytes: 1024, stopped: eof\n"
 		if buf.String() != expected {
 			t.Errorf("expected %q, got %q", expected, buf.String())
 		}
@@ -29,7 +29,7 @@ func TestEngineReport(t *testing.T) {
 		e.SummaryMode = "json"
 		var buf bytes.Buffer
 		e.Report(&buf)
-		expected := `{"lines": 10, "tokens": 25, "bytes": 1024, "stopped": "eof"}` + "\n"
+		expected := "\n" + `{"lines": 10, "tokens": 25, "bytes": 1024, "stopped": "eof"}` + "\n"
 		if buf.String() != expected {
 			t.Errorf("expected %q, got %q", expected, buf.String())
 		}
