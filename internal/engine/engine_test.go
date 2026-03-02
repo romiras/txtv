@@ -235,3 +235,56 @@ func TestEngine_UTF8Guard(t *testing.T) {
 		t.Errorf("expected UTF-8 error, got: %v", err)
 	}
 }
+
+func TestEngineProcess_SoftStop_FindsNewline(t *testing.T) {
+	e := &Engine{MaxTokens: 1, SoftStop: true}
+	input := "token1 token2 and this is the rest of the line\nsecond line"
+	r := strings.NewReader(input)
+	var w bytes.Buffer
+
+	err := e.Process(r, &w)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := "token1 token2 and this is the rest of the line\n"
+	if w.String() != expected {
+		t.Errorf("output: expected %q, got %q", expected, w.String())
+	}
+	if e.StoppedBy != "max_tokens" {
+		t.Errorf("StoppedBy: expected 'max_tokens', got %q", e.StoppedBy)
+	}
+}
+
+func TestEngineProcess_SoftStop_HitsFailSafe(t *testing.T) {
+	e := &Engine{MaxTokens: 1, SoftStop: true}
+
+	size := 1024*1024 + 100
+	inputData := make([]byte, size)
+	for i := range size {
+		inputData[i] = byte('A' + (i % 26))
+	}
+	inputData[0] = 'H'
+	inputData[1] = 'i'
+	inputData[2] = ' '
+
+	input := string(inputData)
+	r := strings.NewReader(input)
+	var w bytes.Buffer
+
+	err := e.Process(r, &w)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if e.StoppedBy != "soft_limit" {
+		t.Errorf("StoppedBy: expected 'soft_limit', got %q", e.StoppedBy)
+	}
+
+	if w.Len() < 1024*1024 {
+		t.Errorf("expected output to be at least 1MB, got %d", w.Len())
+	}
+	if w.Len() == size {
+		t.Errorf("expected output to be strictly less than input size, but got full size")
+	}
+}

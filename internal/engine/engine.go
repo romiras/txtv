@@ -11,6 +11,12 @@ import (
 
 var ErrInvalidUTF8 = fmt.Errorf("invalid UTF-8 or binary data")
 
+const (
+	chunkSize      = 32 * 1024
+	lookaheadSize  = 32
+	softLimitBytes = 1024 * 1024
+)
+
 // Engine manages the streaming logic and limit tracking.
 type Engine struct {
 	MaxTokens    int
@@ -31,11 +37,124 @@ type Token struct {
 	IsEOL bool // True if contains '\n'
 }
 
+// calcAvailable determines how many bytes in buf are safe to process this
+// iteration, respecting the lookahead window and UTF-8 rune boundaries.
+func calcAvailable(buf []byte, total int, isEOF bool) int {
+	if isEOF {
+		return total
+	}
+	if total <= lookaheadSize {
+		return 0 // Wait for more data
+	}
+	available := total - lookaheadSize
+	// Backtrack to the nearest rune start to avoid splitting a multi-byte rune.
+	for available > 0 && !utf8.RuneStart(buf[available]) {
+		available--
+	}
+	return available
+}
+
+// applyLineLimit checks the line limit against the slice. If the limit is hit,
+// it truncates the slice and returns true.
+func (e *Engine) applyLineLimit(slice []byte) ([]byte, bool) {
+	remaining := e.MaxLines - e.LinesCount
+	for i, b := range slice {
+		if b == '\n' {
+			remaining--
+			if remaining == 0 {
+				return slice[:i+1], true
+			}
+		}
+	}
+	return slice, false
+}
+
+// findNewline returns the index after the first '\n' starting from offset, or -1.
+func findNewline(slice []byte, offset int) int {
+	for i := offset; i < len(slice); i++ {
+		if slice[i] == '\n' {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// applyTokenLimit enforces the token limit, including soft-stop logic.
+// Returns the (possibly truncated) slice and whether we should stop after writing.
+func (e *Engine) applyTokenLimit(slice []byte) ([]byte, bool) {
+	// Already past the limit — in soft-stop mode, drain until EOL or fail-safe.
+	if e.TokensCount >= e.MaxTokens && e.SoftStop {
+		if pos := findNewline(slice, 0); pos != -1 {
+			slice = slice[:pos]
+			e.StoppedBy = "max_tokens"
+			tok, _ := segmenter.CountAndCut(slice, 0)
+			e.TokensCount += tok
+			return slice, true
+		}
+		// No newline found — accumulate bytes toward the 1MB fail-safe.
+		e.SoftBytes += len(slice)
+		tok, _ := segmenter.CountAndCut(slice, 0)
+		e.TokensCount += tok
+		if e.SoftBytes >= softLimitBytes {
+			e.StoppedBy = "soft_limit"
+			return slice, true
+		}
+		return slice, false
+	}
+
+	remaining := e.MaxTokens - e.TokensCount
+	tokCount, cutoff := segmenter.CountAndCut(slice, remaining)
+	if tokCount < remaining {
+		// Limit not yet reached; count and keep going.
+		e.TokensCount += tokCount
+		return slice, false
+	}
+
+	// Token limit reached within this slice.
+	if e.SoftStop {
+		if pos := findNewline(slice, cutoff); pos != -1 {
+			slice = slice[:pos]
+			e.StoppedBy = "max_tokens"
+			tokCount, _ = segmenter.CountAndCut(slice, 0)
+			e.TokensCount += tokCount
+			return slice, true
+		}
+		// No newline in this chunk; accumulate overhead bytes.
+		e.SoftBytes += len(slice) - cutoff
+		tokCount, _ = segmenter.CountAndCut(slice, 0)
+		e.TokensCount += tokCount
+		return slice, false
+	}
+
+	// Hard stop: truncate exactly at the cutoff.
+	slice = slice[:cutoff]
+	e.TokensCount += tokCount
+	return slice, true
+}
+
+// writeChunk writes slice to w, updates stats, and optionally flushes.
+func (e *Engine) writeChunk(w io.Writer, slice []byte) error {
+	nw, wErr := w.Write(slice)
+	e.BytesEmitted += int64(nw)
+	if e.Flush {
+		if f, ok := w.(interface{ Sync() error }); ok {
+			_ = f.Sync()
+		}
+	}
+	return wErr
+}
+
+// countNewlines counts '\n' bytes in slice, adding to e.LinesCount.
+func (e *Engine) countNewlines(slice []byte) {
+	for _, b := range slice {
+		if b == '\n' {
+			e.LinesCount++
+		}
+	}
+}
+
 // Process reads from r and writes to w, enforcing token and line limits.
 func (e *Engine) Process(r io.Reader, w io.Writer) error {
-	const chunkSize = 32 * 1024
-	const lookaheadSize = 32
-
 	buf := make([]byte, chunkSize+lookaheadSize)
 	pending := 0
 
@@ -59,30 +178,12 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 			continue
 		}
 
-		// Calculate how many bytes are available to process this iteration.
-		// Keep up to 32 bytes in the lookahead carry-over unless we're at EOF.
-		var available int
-		if isEOF {
-			available = total
-		} else {
-			if total > lookaheadSize {
-				available = total - lookaheadSize
-				// Backtrack to the nearest rune start to avoid splitting a multi-byte rune.
-				// utf8.RuneStart returns true if the byte is not a continuation byte.
-				for available > 0 && !utf8.RuneStart(buf[available]) {
-					available--
-				}
-			} else {
-				available = 0 // Wait for more data
-			}
-		}
+		available := calcAvailable(buf, total, isEOF)
 
 		if available > 0 {
 			writeSlice := buf[:available]
 
 			// --- UTF-8 Validation ---
-			// Since we aligned available to a rune boundary, if it's invalid UTF-8,
-			// it's truly invalid, not just a partial rune.
 			if !utf8.Valid(writeSlice) {
 				e.StoppedBy = "error"
 				return ErrInvalidUTF8
@@ -93,59 +194,22 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 
 			// --- max-lines enforcement ---
 			if e.MaxLines > 0 {
-				remaining := e.MaxLines - e.LinesCount
-				pos := 0
-				for i, b := range writeSlice {
-					if b == '\n' {
-						remaining--
-						if remaining == 0 {
-							pos = i + 1
-							hitLines = true
-							break
-						}
-					}
-				}
-				if hitLines {
-					writeSlice = writeSlice[:pos]
-				}
+				writeSlice, hitLines = e.applyLineLimit(writeSlice)
 			}
 
 			// --- max-tokens enforcement ---
 			if e.MaxTokens > 0 && !hitLines {
-				remaining := e.MaxTokens - e.TokensCount
-				tokCount, cutoff := segmenter.CountAndCut(writeSlice, remaining)
-				if tokCount >= remaining {
-					// Reached or exceeded the limit within this slice.
-					writeSlice = writeSlice[:cutoff]
-					hitTokens = true
-				}
-				// Accumulate counted tokens (only those within the slice we'll emit).
-				if hitTokens {
-					e.TokensCount += tokCount
-				} else {
-					e.TokensCount += tokCount
-				}
+				writeSlice, hitTokens = e.applyTokenLimit(writeSlice)
 			} else if e.MaxTokens == 0 {
 				// No token limit: still count for reporting.
-				tokCount, _ := segmenter.CountAndCut(writeSlice, 0)
-				e.TokensCount += tokCount
+				tok, _ := segmenter.CountAndCut(writeSlice, 0)
+				e.TokensCount += tok
 			}
 
 			// Count newlines in the slice we're about to emit.
-			for _, b := range writeSlice {
-				if b == '\n' {
-					e.LinesCount++
-				}
-			}
+			e.countNewlines(writeSlice)
 
-			nw, wErr := w.Write(writeSlice)
-			e.BytesEmitted += int64(nw)
-			if e.Flush {
-				if f, ok := w.(interface{ Sync() error }); ok {
-					_ = f.Sync()
-				}
-			}
-			if wErr != nil {
+			if wErr := e.writeChunk(w, writeSlice); wErr != nil {
 				e.StoppedBy = "error"
 				return wErr
 			}
@@ -155,7 +219,9 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 				return nil
 			}
 			if hitTokens {
-				e.StoppedBy = "max_tokens"
+				if e.StoppedBy == "" {
+					e.StoppedBy = "max_tokens"
+				}
 				return nil
 			}
 

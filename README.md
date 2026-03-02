@@ -1,21 +1,23 @@
 # txtv
 
-**Precision Truncation for Text Streams: The LLM Guardrail You've Been Waiting For.**
+**Streaming Text Truncation: The Lightweight Guardrail for LLM Context Windows.**
 
-`txtv` is a CLI tool designed for deterministic text stream truncation. It ensures your text fits within strict limits—like LLM context windows—without splitting multi-byte Unicode characters or breaking atomic word boundaries.
+`txtv` is a lightning-fast CLI tool designed for deterministic text stream truncation. It ensures your text fits within strict token or line limits without splitting multi-byte Unicode characters or breaking atomic word boundaries—all while maintaining a strictly $\mathcal{O}(1)$ memory footprint.
 
 ## Motivation
 
-Traditional Unix tools like `head` or `wc` operate on bytes or single-byte characters, which makes them unreliable for modern, Unicode-heavy text streams. When feeding data into LLMs, "close enough" isn't good enough. Excess tokens lead to rejected requests, and split Unicode sequences lead to garbled input. `txtv` solves this by using a Unicode-aware "Hybrid Heuristic" for tokenization, ensuring that every truncation is clean and correct.
+Traditional Unix tools like `head` or `wc` operate purely on bytes or lines, making them dangerous for modern, Unicode-heavy text streams. When feeding piped data into LLMs, "close enough" isn't good enough. Arbitrarily slicing a stream can lead to rejected requests, garbled input, or split emojis.
 
-## Purpose
+Conversely, full-fledged tokenizers (like `tiktoken`) require loading multi-megabyte vocabularies into RAM, destroying the $\mathcal{O}(1)$ streaming nature of standard Unix pipes.
 
-The primary purpose of `txtv` is to act as a reliable pipe-filter that:
+`txtv` solves this by introducing a dependency-free **Hybrid Heuristic** (inspired by UAX #29). It safely segments text at word and grapheme cluster boundaries, acting as a highly efficient, conservative approximation of LLM token limits designed specifically for bash pipelines.
 
-1. **Protects LLM Contexts**: Enforces strict token and line limits.
-2. **Preserves Data Integrity**: Never cuts in the middle of a Unicode grapheme cluster or word segment.
-3. **Ensures Reliability**: Implements a 1MB safety fail-safe for "soft" stop modes to prevent hanging on rogue streams.
-4. **Maintains Performance**: Operates with a constant memory footprint, regardless of input size.
+## Key Features
+
+1. **Protects LLM Contexts**: Enforces strict token and line limits natively in bash before you waste API spend.
+2. **Preserves Data Integrity**: Safely halts execution without ever cutting a Unicode sequence or word segment in half.
+3. **$\mathcal{O}(1)$ Performance**: Streams infinitely large inputs with a constant ~32KB memory footprint. Zero dictionary loading.
+4. **Resilient Fail-Safes**: Built-in 1MB safety catch for "soft" stop modes to prevent hanging on unbounded streams.
 
 ## Usage
 
