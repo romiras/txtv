@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -40,6 +41,12 @@ func main() {
 	err := e.Process(os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if errors.Is(err, engine.ErrInvalidUTF8) {
+			e.Report(os.Stderr)
+			os.Exit(2)
+		}
+		e.Report(os.Stderr)
+		os.Exit(1)
 	}
 	e.Report(os.Stderr)
 }

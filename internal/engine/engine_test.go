@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -219,5 +220,18 @@ func TestEngineProcess_MaxTokens(t *testing.T) {
 				t.Errorf("StoppedBy: want %q, got %q", tc.wantStopped, e.StoppedBy)
 			}
 		})
+	}
+}
+
+func TestEngine_UTF8Guard(t *testing.T) {
+	// Invalid UTF-8 sequence: \xff
+	input := []byte("valid text\xffmore text")
+	e := &Engine{}
+
+	err := e.Process(bytes.NewReader(input), io.Discard)
+	if err == nil {
+		t.Error("expected error for invalid UTF-8, got nil")
+	} else if !strings.Contains(err.Error(), "invalid UTF-8") {
+		t.Errorf("expected UTF-8 error, got: %v", err)
 	}
 }

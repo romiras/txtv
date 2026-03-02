@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"io"
 
+	"unicode/utf8"
+
 	"github.com/romiras/txtv/internal/segmenter"
 )
+
+var ErrInvalidUTF8 = fmt.Errorf("invalid UTF-8 or binary data")
 
 // Engine manages the streaming logic and limit tracking.
 type Engine struct {
@@ -63,6 +67,11 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 		} else {
 			if total > lookaheadSize {
 				available = total - lookaheadSize
+				// Backtrack to the nearest rune start to avoid splitting a multi-byte rune.
+				// utf8.RuneStart returns true if the byte is not a continuation byte.
+				for available > 0 && !utf8.RuneStart(buf[available]) {
+					available--
+				}
 			} else {
 				available = 0 // Wait for more data
 			}
@@ -70,6 +79,15 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 
 		if available > 0 {
 			writeSlice := buf[:available]
+
+			// --- UTF-8 Validation ---
+			// Since we aligned available to a rune boundary, if it's invalid UTF-8,
+			// it's truly invalid, not just a partial rune.
+			if !utf8.Valid(writeSlice) {
+				e.StoppedBy = "error"
+				return ErrInvalidUTF8
+			}
+
 			hitLines := false
 			hitTokens := false
 
