@@ -1,6 +1,6 @@
 # Binaries
 bin/
-txtv
+/txtv
 txtv.exe
 
 # OS generated files
@@ -25,3 +25,4 @@ coverage.txt
 
 # Project specific
 .tickets/
+docs/
