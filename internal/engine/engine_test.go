@@ -288,3 +288,28 @@ func TestEngineProcess_SoftStop_HitsFailSafe(t *testing.T) {
 		t.Errorf("expected output to be strictly less than input size, but got full size")
 	}
 }
+
+type mockSyncer struct {
+	bytes.Buffer
+	syncs int
+}
+
+func (m *mockSyncer) Sync() error {
+	m.syncs++
+	return nil
+}
+
+func TestEngineProcess_Flush(t *testing.T) {
+	e := &Engine{Flush: true}
+	input := "hello world"
+	r := strings.NewReader(input)
+	w := &mockSyncer{}
+
+	err := e.Process(r, w)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w.syncs == 0 {
+		t.Errorf("expected Sync to be called when Flush is true")
+	}
+}

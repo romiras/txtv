@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,7 +39,10 @@ func main() {
 		Flush:       flush,
 	}
 
-	err := e.Process(os.Stdin, os.Stdout)
+	bw := bufio.NewWriter(os.Stdout)
+	err := e.Process(os.Stdin, bw)
+	bw.Flush() // Ensure all remaining output is written
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		if errors.Is(err, engine.ErrInvalidUTF8) {

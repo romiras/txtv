@@ -39,14 +39,18 @@ type Token struct {
 
 // calcAvailable determines how many bytes in buf are safe to process this
 // iteration, respecting the lookahead window and UTF-8 rune boundaries.
-func calcAvailable(buf []byte, total int, isEOF bool) int {
+func (e *Engine) calcAvailable(buf []byte, total int, isEOF bool) int {
 	if isEOF {
 		return total
 	}
-	if total <= lookaheadSize {
+	lookahead := lookaheadSize
+	if e.Flush {
+		lookahead = 0
+	}
+	if total <= lookahead {
 		return 0 // Wait for more data
 	}
-	available := total - lookaheadSize
+	available := total - lookahead
 	// Backtrack to the nearest rune start to avoid splitting a multi-byte rune.
 	for available > 0 && !utf8.RuneStart(buf[available]) {
 		available--
@@ -132,16 +136,37 @@ func (e *Engine) applyTokenLimit(slice []byte) ([]byte, bool) {
 	return slice, true
 }
 
-// writeChunk writes slice to w, updates stats, and optionally flushes.
+type flusher interface {
+	Flush() error
+}
+
+// writeChunk writes slice to w, updates stats, and optionally flushes token by token.
 func (e *Engine) writeChunk(w io.Writer, slice []byte) error {
-	nw, wErr := w.Write(slice)
-	e.BytesEmitted += int64(nw)
-	if e.Flush {
-		if f, ok := w.(interface{ Sync() error }); ok {
-			_ = f.Sync()
-		}
+	if !e.Flush {
+		nw, wErr := w.Write(slice)
+		e.BytesEmitted += int64(nw)
+		return wErr
 	}
-	return wErr
+
+	offset := 0
+	for offset < len(slice) {
+		tokCount, cutoff := segmenter.CountAndCut(slice[offset:], 1)
+		if cutoff == 0 || tokCount == 0 {
+			cutoff = len(slice) - offset
+		}
+		nw, wErr := w.Write(slice[offset : offset+cutoff])
+		e.BytesEmitted += int64(nw)
+		if wErr != nil {
+			return wErr
+		}
+		if f, ok := w.(flusher); ok {
+			_ = f.Flush()
+		} else if s, ok := w.(interface{ Sync() error }); ok {
+			_ = s.Sync()
+		}
+		offset += cutoff
+	}
+	return nil
 }
 
 // countNewlines counts '\n' bytes in slice, adding to e.LinesCount.
@@ -178,7 +203,7 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 			continue
 		}
 
-		available := calcAvailable(buf, total, isEOF)
+		available := e.calcAvailable(buf, total, isEOF)
 
 		if available > 0 {
 			writeSlice := buf[:available]
