@@ -9,6 +9,9 @@
 
 Follow this lifecycle for every feature, bug fix, or chore:
 
+0.  **Preparation**:
+    - Always check the state of open tickets: `tk ls --status=open`.
+    - Always check the current git status: `git status` (or `git st`).
 1.  **Ticket Creation**:
     - Create a ticket using `tk create "Title" -t <type> -d "Description"`.
     - Capture the generated Ticket ID (e.g., `txt-xugl`).
