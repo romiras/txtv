@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"io"
+
+	"github.com/romiras/txtv/internal/segmenter"
 )
 
 // Engine manages the streaming logic and limit tracking.
@@ -25,7 +27,7 @@ type Token struct {
 	IsEOL bool // True if contains '\n'
 }
 
-// Process reads from r and writes to w.
+// Process reads from r and writes to w, enforcing token and line limits.
 func (e *Engine) Process(r io.Reader, w io.Writer) error {
 	const chunkSize = 32 * 1024
 	const lookaheadSize = 32
@@ -67,31 +69,51 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 		}
 
 		if available > 0 {
-			// Determine the actual slice to write, respecting --max-lines.
 			writeSlice := buf[:available]
-			hitLimit := false
+			hitLines := false
+			hitTokens := false
 
+			// --- max-lines enforcement ---
 			if e.MaxLines > 0 {
-				// Scan for newlines and stop atomically after the Nth line.
 				remaining := e.MaxLines - e.LinesCount
 				pos := 0
 				for i, b := range writeSlice {
 					if b == '\n' {
 						remaining--
 						if remaining == 0 {
-							// Include this newline then stop.
 							pos = i + 1
-							hitLimit = true
+							hitLines = true
 							break
 						}
 					}
 				}
-				if hitLimit {
+				if hitLines {
 					writeSlice = writeSlice[:pos]
 				}
 			}
 
-			// Count newlines in the slice we are about to emit.
+			// --- max-tokens enforcement ---
+			if e.MaxTokens > 0 && !hitLines {
+				remaining := e.MaxTokens - e.TokensCount
+				tokCount, cutoff := segmenter.CountAndCut(writeSlice, remaining)
+				if tokCount >= remaining {
+					// Reached or exceeded the limit within this slice.
+					writeSlice = writeSlice[:cutoff]
+					hitTokens = true
+				}
+				// Accumulate counted tokens (only those within the slice we'll emit).
+				if hitTokens {
+					e.TokensCount += tokCount
+				} else {
+					e.TokensCount += tokCount
+				}
+			} else if e.MaxTokens == 0 {
+				// No token limit: still count for reporting.
+				tokCount, _ := segmenter.CountAndCut(writeSlice, 0)
+				e.TokensCount += tokCount
+			}
+
+			// Count newlines in the slice we're about to emit.
 			for _, b := range writeSlice {
 				if b == '\n' {
 					e.LinesCount++
@@ -110,8 +132,12 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 				return wErr
 			}
 
-			if hitLimit {
+			if hitLines {
 				e.StoppedBy = "max_lines"
+				return nil
+			}
+			if hitTokens {
+				e.StoppedBy = "max_tokens"
 				return nil
 			}
 
@@ -124,12 +150,6 @@ func (e *Engine) Process(r io.Reader, w io.Writer) error {
 
 		if isEOF {
 			e.StoppedBy = "eof"
-			break
-		}
-
-		// --max-tokens requires Task 1.3 Segmenter; counter stays 0 until then.
-		if e.MaxTokens > 0 && e.TokensCount >= e.MaxTokens {
-			e.StoppedBy = "max_tokens"
 			break
 		}
 	}

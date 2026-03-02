@@ -156,3 +156,68 @@ func TestEngineProcess_MaxLines(t *testing.T) {
 		})
 	}
 }
+
+func TestEngineProcess_MaxTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		maxTokens   int
+		wantOut     string
+		wantStopped string
+	}{
+		{
+			name:        "ascii stop after 1 word",
+			input:       "Hello world",
+			maxTokens:   1,
+			wantOut:     "Hello",
+			wantStopped: "max_tokens",
+		},
+		{
+			name:        "ascii stop after word + space",
+			input:       "Hello world",
+			maxTokens:   2,
+			wantOut:     "Hello ",
+			wantStopped: "max_tokens",
+		},
+		{
+			name:        "ascii limit larger than input",
+			input:       "Hi",
+			maxTokens:   100,
+			wantOut:     "Hi",
+			wantStopped: "eof",
+		},
+		{
+			name:        "greek two words",
+			input:       "Γεια σου",
+			maxTokens:   3,
+			wantOut:     "Γεια σου",
+			wantStopped: "max_tokens",
+		},
+		{
+			name:        "cjk stop after 2",
+			input:       "こんにちは",
+			maxTokens:   2,
+			wantOut:     "こん",
+			wantStopped: "max_tokens",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Engine{MaxTokens: tc.maxTokens}
+			r := strings.NewReader(tc.input)
+			var w bytes.Buffer
+
+			err := e.Process(r, &w)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if w.String() != tc.wantOut {
+				t.Errorf("output: want %q, got %q", tc.wantOut, w.String())
+			}
+			if e.StoppedBy != tc.wantStopped {
+				t.Errorf("StoppedBy: want %q, got %q", tc.wantStopped, e.StoppedBy)
+			}
+		})
+	}
+}
